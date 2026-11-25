@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Monitor Batería 48V</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--text:#14202b;--muted:#5d6b78;--line:#dfe5ea;--accent:#0a7cff;--ok:#1a9d4b;--warn:#d98a00;--bad:#d62839;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e141a;--card:#18212a;--text:#e8eef3;--muted:#93a1ae;--line:#2a3743;--accent:#4aa3ff;--ok:#3fcf75;--warn:#f0b429;--bad:#ff5d6c}}
+:root[data-theme="dark"]{--bg:#0e141a;--card:#18212a;--text:#e8eef3;--muted:#93a1ae;--line:#2a3743;--accent:#4aa3ff;--ok:#3fcf75;--warn:#f0b429;--bad:#ff5d6c}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px;max-width:560px;margin-inline:auto}
+h1{font-size:1.15rem;margin:0 0 12px}
+.top{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:12px}
+button{background:var(--accent);color:#fff;border:0;border-radius:10px;padding:10px 16px;font-size:1rem;font-weight:600}
+button.sec{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+.status{border-radius:14px;padding:14px 16px;margin-bottom:12px;color:#fff;background:var(--muted)}
+.status.ok{background:var(--ok)}.status.warn{background:var(--warn)}.status.bad{background:var(--bad)}
+.status b{font-size:1.4rem;display:block}
+.status span{opacity:.9;font-size:.95rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 16px;margin-bottom:12px}
+.lbl{color:var(--muted);font-size:.85rem}
+.val{font-size:2.4rem;font-weight:700;line-height:1.1}
+.val small{font-size:1.1rem;font-weight:500;color:var(--muted);margin-left:4px}
+svg{width:100%;height:64px;display:block;margin-top:8px}
+.mm{display:flex;justify-content:space-between;color:var(--muted);font-size:.8rem;margin-top:2px}
+.raw{font-family:ui-monospace,Menlo,monospace;font-size:.8rem;color:var(--muted);word-break:break-all}
+#msg{color:var(--muted);font-size:.85rem;margin-bottom:12px}
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Monitor Batería 48V</h1>
+  <button id="btn">Conectar</button>
+</div>
+<div id="msg">Desconectado. Tocá “Conectar” y elegí MonitorBat48V_BLE.</div>
+<div id="st" class="status"><b id="estado">—</b><span id="alarma">Sin datos</span></div>
+
+<div class="card"><div class="lbl">Voltaje total (VT)</div><div class="val"><span id="vt">--</span><small>V</small></div>
+<svg id="g-vt" viewBox="0 0 300 64" preserveAspectRatio="none"></svg><div class="mm"><span id="mn-vt"></span><span id="mx-vt"></span></div></div>
+
+<div class="card"><div class="lbl">Voltaje medio (VM)</div><div class="val"><span id="vm">--</span><small>V</small></div>
+<svg id="g-vm" viewBox="0 0 300 64" preserveAspectRatio="none"></svg><div class="mm"><span id="mn-vm"></span><span id="mx-vm"></span></div></div>
+
+<div class="card"><div class="lbl">Temperatura</div><div class="val"><span id="t">--</span><small>°C</small></div>
+<svg id="g-t" viewBox="0 0 300 64" preserveAspectRatio="none"></svg><div class="mm"><span id="mn-t"></span><span id="mx-t"></span></div></div>
+
+<div class="card"><div class="lbl">Último dato recibido <span id="hora"></span></div><div class="raw" id="raw">—</div></div>
+
+<script>
+const SERVICE='6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const CHAR='6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+const MAX=300;
+const hist={vt:[],vm:[],t:[]};
+const $=id=>document.getElementById(id);
+let device=null,ch=null;
+
+function setMsg(s){$('msg').textContent=s}
+
+function spark(key){
+  const d=hist[key],svg=$('g-'+key);
+  if(d.length<2){svg.innerHTML='';return}
+  let mn=Math.min(...d),mx=Math.max(...d);
+  if(mx-mn<0.01){mn-=0.5;mx+=0.5}
+  const pts=d.map((v,i)=>((i/(d.length-1))*300).toFixed(1)+','+(60-((v-mn)/(mx-mn))*56).toFixed(1)).join(' ');
+  svg.innerHTML='<polyline fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke" points="'+pts+'"/>';
+  $('mn-'+key).textContent='mín '+Math.min(...d).toFixed(2);
+  $('mx-'+key).textContent='máx '+Math.max(...d).toFixed(2);
+}
+
+function parse(txt){
+  const parts=txt.trim().split('|');
+  const out={estado:parts[0]||'',alarma:parts[1]||''};
+  for(const p of parts){
+    const m=p.match(/^(VT|VM|T)\s*:\s*(-?\d+(?:\.\d+)?)/i);
+    if(m)out[m[1].toUpperCase()]=parseFloat(m[2]);
+  }
+  return out;
+}
+
+function update(txt){
+  $('raw').textContent=txt;
+  $('hora').textContent='('+new Date().toLocaleTimeString()+')';
+  const o=parse(txt);
+  $('estado').textContent=o.estado||'—';
+  $('alarma').textContent=o.alarma||'';
+  const e=(o.estado||'').toUpperCase();
+  $('st').className='status '+(/CRIT|ALARM|BAJO/.test(e)?'bad':/ADV|WARN|ALERT/.test(e)?'warn':/NORMAL|OK|BIEN/.test(e)?'ok':'');
+  const map={VT:['vt',2],VM:['vm',2],T:['t',1]};
+  for(const k in map){
+    if(o[k]===undefined)continue;
+    const [id,dec]=map[k];
+    $(id).textContent=o[k].toFixed(dec);
+    hist[id].push(o[k]);
+    if(hist[id].length>MAX)hist[id].shift();
+    spark(id);
+  }
+}
+
+function onData(ev){
+  update(new TextDecoder('utf-8').decode(ev.target.value));
+}
+
+async function connect(){
+  if(!navigator.bluetooth){setMsg('Este navegador no soporta Web Bluetooth. Abrí la página en Chrome para Android.');return}
+  try{
+    setMsg('Buscando dispositivo…');
+    if(!device){
+      device=await navigator.bluetooth.requestDevice({
+        filters:[{namePrefix:'MonitorBat'}],
+        optionalServices:[SERVICE]
+      });
+      device.addEventListener('gattserverdisconnected',onDisc);
+    }
+    setMsg('Conectando…');
+    const server=await device.gatt.connect();
+    const svc=await server.getPrimaryService(SERVICE);
+    ch=await svc.getCharacteristic(CHAR);
+    ch.addEventListener('characteristicvaluechanged',onData);
+    await ch.startNotifications();
+    try{update(new TextDecoder().decode(await ch.readValue()))}catch(e){}
+    setMsg('Conectado a '+device.name+'. Recibiendo datos en vivo.');
+    $('btn').textContent='Desconectar';
+    $('btn').className='sec';
+  }catch(err){
+    setMsg('No se pudo conectar: '+err.message);
+    $('btn').textContent='Conectar';
+    $('btn').className='';
+  }
+}
+
+function onDisc(){
+  setMsg('Se perdió la conexión. Tocá “Conectar” para reintentar.');
+  $('btn').textContent='Conectar';
+  $('btn').className='';
+}
+
+$('btn').addEventListener('click',()=>{
+  if(device&&device.gatt.connected){device.gatt.disconnect()}else{connect()}
+});
+</script>
+</body>
+</html>
